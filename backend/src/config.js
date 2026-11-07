@@ -5,14 +5,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const backendRoot = path.resolve(__dirname, '..');
 
-/**
- * System-Wide Configuration & Operational Guardrails
- *
- * Enforces:
- * 1. 4 GB Total Server RAM Budget (with automated fallback trigger at 85%)
- * 2. Strict 2,048-Token Context Budget per model call
- * 3. 2 vCPU Pure CPU Inference Timeouts (30s watchdog)
- */
+
 export const CONFIG = {
   // Server Port & Host
   PORT: process.env.PORT || 5000,
