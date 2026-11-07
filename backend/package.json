@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node tests/verifyChunking.js"
+    "test": "node tests/verifyChunking.js && node tests/verifyFixes.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -6,7 +6,10 @@ import { ReportSynthesizer } from '../src/services/reportSynthesizer.js';
 import { StateAccumulator } from '../src/services/stateAccumulator.js';
 import { distillAllLogLines } from '../src/services/logDistiller.js';
 
-const rawText = fs.readFileSync('Cultive8_Workspace_Agrigen_Server.log', 'utf8');
+const logPath = fs.existsSync('Cultive8_Workspace_Agrigen_Server.log')
+  ? 'Cultive8_Workspace_Agrigen_Server.log'
+  : path.resolve('..', 'Cultive8_Workspace_Agrigen_Server.log');
+const rawText = fs.readFileSync(logPath, 'utf8');
 const rawLinesArray = rawText.split(/\r?\n/);
 const rawLinesMap = new Map();
 rawLinesArray.forEach((line, idx) => rawLinesMap.set(idx + 1, line));
