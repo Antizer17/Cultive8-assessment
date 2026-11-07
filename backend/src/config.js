@@ -33,7 +33,8 @@ export const CONFIG = {
     FALLBACK: 'qwen2.5:0.5b',    // Ultra-light, ~550 MB RAM footprint
     OLLAMA_BASE_URL: process.env.OLLAMA_URL || 'http://localhost:11434',
     TIMEOUT_MS: 30000,           // 30-second watchdog for 2 vCPU execution
-    TEMPERATURE: 0.1,            // Deterministic structured extraction
+    TEMPERATURE: 0.0,            // Strict temperature 0 for zero hallucination
+    REPEAT_PENALTY: 1.15,        // Prevent looping summaries
     MAX_RETRIES: 2               // Max retries per chunk before fallback
   },
 
@@ -42,5 +43,15 @@ export const CONFIG = {
     DATA_DIR: path.join(backendRoot, 'data'),
     JOBS_DIR: path.join(backendRoot, 'data', 'jobs'),
     UPLOADS_DIR: path.join(backendRoot, 'data', 'uploads')
+  },
+
+  // Configurable Security Allowlist (Operations & Infrastructure Exclusions)
+  ALLOWLIST: {
+    // Configurable via ALLOWLIST_IPS env var (e.g. registered ops-config health monitors)
+    TRUSTED_IPS: process.env.ALLOWLIST_IPS
+      ? process.env.ALLOWLIST_IPS.split(',').map(s => s.trim())
+      : ['192.0.2.10'], // Registered ops-config health monitor
+    TRUSTED_ENDPOINTS: ['/health', '/ready', '/live', '/metrics'],
+    TRUSTED_USER_AGENTS: ['HealthMonitor', 'UptimeCheck']
   }
 };

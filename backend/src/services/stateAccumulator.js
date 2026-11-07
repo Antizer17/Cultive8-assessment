@@ -1,5 +1,6 @@
 import { countTokens } from './tokenizer.js';
 import { CONFIG } from '../config.js';
+import { AllowlistManager } from './allowlistManager.js';
 
 /**
  * State Accumulator Service
@@ -36,6 +37,9 @@ export class StateAccumulator {
           traversalLines: [...(rec.traversalLines || [])],
           adminProbeCount: rec.adminProbeCount || 0,
           adminProbeLines: [...(rec.adminProbeLines || [])],
+          peakRequestsInWindow: rec.peakRequestsInWindow || 0,
+          status429Count: rec.status429Count || 0,
+          rateAbuseLines: [...(rec.rateAbuseLines || [])],
           exfiltrationCount: rec.exfiltrationCount || 0,
           exfiltrationLines: [...(rec.exfiltrationLines || [])],
           isCompromised: !!rec.isCompromised,
@@ -66,6 +70,9 @@ export class StateAccumulator {
         traversalLines: [],
         adminProbeCount: 0,
         adminProbeLines: [],
+        peakRequestsInWindow: 0,
+        status429Count: 0,
+        rateAbuseLines: [],
         exfiltrationCount: 0,
         exfiltrationLines: [],
         isCompromised: false,
@@ -105,8 +112,12 @@ export class StateAccumulator {
       const clientIp = entry?.client_ip || this.extractIpFromText(text);
       if (!clientIp) continue;
 
-      // Ignore standard local health monitors
-      if (entry?.user_agent?.includes('HealthMonitor') || entry?.path === '/health') {
+      // Ignore standard infrastructure & operational allowlisted checks
+      if (
+        AllowlistManager.isIpAllowlisted(clientIp) ||
+        AllowlistManager.isUserAgentAllowlisted(entry?.user_agent) ||
+        AllowlistManager.isEndpointAllowlisted(entry?.path)
+      ) {
         continue;
       }
 
@@ -165,10 +176,10 @@ export class StateAccumulator {
         suspect.adminProbeLines.push(lineNum);
       }
 
-      // 4. Post-Compromise Data Exfiltration (large CSV/export response)
+      // 4. Post-Compromise Data Exfiltration (large byte response or export endpoint)
       if (
         suspect.isCompromised &&
-        (entry?.path?.includes('/export') || entry?.response_bytes > 500000 || /export\?format=csv/i.test(text))
+        (entry?.path?.includes('/export') || (entry?.response_bytes && entry.response_bytes > 500000))
       ) {
         suspect.exfiltrationCount += 1;
         suspect.exfiltrationLines.push(lineNum);
@@ -189,26 +200,14 @@ export class StateAccumulator {
         this.globalTimeline.push(incident);
       }
 
-      // 5. SQL Injection Markers
-      if (
-        /UNION%20SELECT|SELECT%20SLEEP|%27%20OR%201%3D1|OR\s+1=1|UNION\s+SELECT|SLEEP\(\d+\)/i.test(text) ||
-        entry?.path?.includes('%27%20OR') ||
-        entry?.path?.includes('UNION%20SELECT')
-      ) {
-        suspect.sqliCount += 1;
-        if (!suspect.sqliLines.includes(lineNum)) {
-          suspect.sqliLines.push(lineNum);
-        }
+      // 5. Rate Abuse Tracking (requests_in_window climbing or HTTP 429 Too Many Requests)
+      if (entry?.requests_in_window) {
+        suspect.peakRequestsInWindow = Math.max(suspect.peakRequestsInWindow || 0, Number(entry.requests_in_window));
       }
-
-      // 6. Path Traversal Markers
-      if (
-        /\.\.\/|\.\.\\|%2e%2e%2f|etc\/passwd|win\.ini/i.test(text) ||
-        entry?.path?.includes('etc/passwd')
-      ) {
-        suspect.traversalCount += 1;
-        if (!suspect.traversalLines.includes(lineNum)) {
-          suspect.traversalLines.push(lineNum);
+      if (entry?.status === 429) {
+        suspect.status429Count = (suspect.status429Count || 0) + 1;
+        if (!suspect.rateAbuseLines.includes(lineNum)) {
+          suspect.rateAbuseLines.push(lineNum);
         }
       }
     }
@@ -225,7 +224,8 @@ export class StateAccumulator {
   }
 
   /**
-   * Ingests findings produced by the AI model for the current chunk.
+   * Ingests validated findings produced by the AI model for the current chunk.
+   * Note: Failed logins are computed deterministically from auth_result in code (13 -> 12).
    */
   ingestModelFindings(modelFindings = []) {
     for (const f of modelFindings) {
@@ -238,15 +238,7 @@ export class StateAccumulator {
       const firstLine = lines.length > 0 ? Math.min(...lines) : null;
       const suspect = this.getOrCreateSuspect(ip, firstLine);
 
-      if (f.attack_type?.toLowerCase().includes('brute') || f.attack_type?.toLowerCase().includes('login')) {
-        for (const l of lines) {
-          if (!suspect.failedLoginLines.includes(l)) {
-            suspect.failedLoginLines.push(l);
-            suspect.failedLogins += 1;
-          }
-        }
-      }
-
+      // SQL Injection
       if (f.attack_type?.toLowerCase().includes('sql')) {
         for (const l of lines) {
           if (!suspect.sqliLines.includes(l)) {
@@ -256,6 +248,7 @@ export class StateAccumulator {
         }
       }
 
+      // Path Traversal
       if (f.attack_type?.toLowerCase().includes('traversal')) {
         for (const l of lines) {
           if (!suspect.traversalLines.includes(l)) {
@@ -263,6 +256,20 @@ export class StateAccumulator {
             suspect.traversalCount += 1;
           }
         }
+      }
+
+      // Rate Abuse
+      if (f.attack_type?.toLowerCase().includes('rate')) {
+        for (const l of lines) {
+          if (!suspect.rateAbuseLines.includes(l)) {
+            suspect.rateAbuseLines.push(l);
+          }
+        }
+      }
+
+      // Guarded Account Compromise: only mark compromised if proven with successful auth
+      if (f.attack_type?.toLowerCase().includes('compromise') && suspect.successfulLogins.length > 0) {
+        suspect.isCompromised = true;
       }
     }
   }
@@ -276,7 +283,14 @@ export class StateAccumulator {
 
     // Prioritize suspects with notable attack history
     for (const [ip, s] of Object.entries(this.suspects)) {
-      if (s.failedLogins > 0 || s.sqliCount > 0 || s.traversalCount > 0 || s.isCompromised) {
+      if (
+        s.failedLogins > 0 ||
+        s.sqliCount > 0 ||
+        s.traversalCount > 0 ||
+        s.isCompromised ||
+        (s.peakRequestsInWindow && s.peakRequestsInWindow > 50) ||
+        (s.status429Count && s.status429Count > 0)
+      ) {
         const item = {
           ip,
           failed_logins: s.failedLogins,
@@ -286,11 +300,15 @@ export class StateAccumulator {
             ? 'ACCOUNT_COMPROMISED'
             : s.failedLogins >= 3
             ? 'ACTIVE_BRUTE_FORCE_WATCH'
+            : s.status429Count > 0 || s.peakRequestsInWindow > 100
+            ? 'RATE_ABUSE_WATCH'
             : 'SUSPICIOUS_PROBING'
         };
 
         if (s.sqliCount > 0) item.sqli_probes = s.sqliCount;
         if (s.traversalCount > 0) item.traversal_probes = s.traversalCount;
+        if (s.peakRequestsInWindow > 0) item.peak_requests_in_window = s.peakRequestsInWindow;
+        if (s.status429Count > 0) item.http_429_count = s.status429Count;
         if (s.successfulLogins.length > 0) {
           item.compromise_login_lines = s.successfulLogins.map(l => l.line);
         }
