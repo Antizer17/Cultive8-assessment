@@ -1,0 +1,22 @@
+{
+  "name": "local-ai-security-log-analyzer",
+  "version": "1.0.0",
+  "description": "Local AI Security Log Analyzer with cross-chunk attack correlation, strict 2,048 token budgeting, and 4 GB RAM monitoring",
+  "scripts": {
+    "start": "npm start --prefix backend",
+    "dev": "npm run dev --prefix backend",
+    "build": "npm run build --prefix frontend",
+    "test": "npm test --prefix backend",
+    "frontend:dev": "npm run dev --prefix frontend"
+  },
+  "keywords": [
+    "security",
+    "ai",
+    "log-analyzer",
+    "soc",
+    "qwen",
+    "ollama"
+  ],
+  "author": "",
+  "license": "MIT"
+}
